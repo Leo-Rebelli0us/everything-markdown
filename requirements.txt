@@ -1,2 +1,4 @@
 markitdown==0.1.6
 pypdf
+rapidocr-onnxruntime
+pypdfium2

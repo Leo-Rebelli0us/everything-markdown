@@ -5,6 +5,15 @@ import tempfile
 from pathlib import Path
 
 PDF_CHUNK_PAGE_COUNT = 50
+PDF_OCR_RENDER_SCALE = 0.5
+PDF_OCR_LEAN_CONFIG = {
+    "use_angle_cls": False,
+    "det_model_path": "",
+    "det_limit_side_len": 512,
+    "det_limit_type": "min",
+    "det_thresh": 0.25,
+    "det_box_thresh": 0.3,
+}
 
 
 def result(ok, **kwargs):
@@ -27,6 +36,17 @@ def load_pdf_reader_writer():
         return None, None
 
     return PdfReader, PdfWriter
+
+
+def load_pdfium_and_ocr():
+    try:
+        import numpy as np
+        import pypdfium2 as pdfium
+        from rapidocr_onnxruntime import RapidOCR
+    except Exception:
+        return None, None, None
+
+    return np, pdfium, RapidOCR(**PDF_OCR_LEAN_CONFIG)
 
 
 def extract_markdown_text(markdown):
@@ -72,18 +92,72 @@ def convert_pdf_in_chunks(converter, source):
     return "\n\n".join(part for part in parts if part)
 
 
+def extract_text_from_ocr_result(result):
+    lines = []
+    for item in result or []:
+        if not isinstance(item, (list, tuple)) or len(item) < 2:
+            continue
+
+        text = str(item[1]).strip()
+        if text:
+            lines.append(text)
+
+    return "\n".join(lines).strip()
+
+
+def convert_pdf_with_ocr(source):
+    np, pdfium, ocr_engine = load_pdfium_and_ocr()
+    if np is None or pdfium is None or ocr_engine is None:
+        return None
+
+    try:
+        pdf = pdfium.PdfDocument(str(source))
+    except Exception:
+        return None
+
+    try:
+        page_count = len(pdf)
+        if page_count <= 0:
+            return None
+
+        parts = []
+        for page_index in range(page_count):
+            page = pdf[page_index]
+            bitmap = page.render(scale=PDF_OCR_RENDER_SCALE, grayscale=True)
+            ocr_result, _ = ocr_engine(np.asarray(bitmap.to_numpy()))
+            page_text = extract_text_from_ocr_result(ocr_result)
+            if page_text:
+                parts.append(page_text)
+
+        return "\n\n".join(parts).strip()
+    finally:
+        close = getattr(pdf, "close", None)
+        if callable(close):
+            close()
+
+
 def convert_source(converter, source):
     try:
-        return convert_local(converter, source)
+        text_content = convert_local(converter, source)
     except Exception:
         if source.suffix.lower() != ".pdf":
             raise
 
-        chunked_markdown = convert_pdf_in_chunks(converter, source)
-        if chunked_markdown is None:
+        text_content = convert_pdf_in_chunks(converter, source)
+        if text_content is None:
             raise
 
-        return chunked_markdown
+    if text_content and text_content.strip():
+        return text_content
+
+    if source.suffix.lower() != ".pdf":
+        return text_content
+
+    ocr_markdown = convert_pdf_with_ocr(source)
+    if ocr_markdown and ocr_markdown.strip():
+        return ocr_markdown
+
+    raise RuntimeError("PDF 没有可提取文本，OCR 识别未返回内容，请安装 OCR 依赖或检查文件质量。")
 
 
 def convert_with_converter(converter, input_path, output_path):

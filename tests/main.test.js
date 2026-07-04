@@ -407,6 +407,102 @@ class PdfWriter:
   assert.match(markdown, /Page 50\r?\n\r?\nPage 51/);
 });
 
+test("converter script uses OCR when a PDF has no extractable text", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "everything-markdown-"));
+  const stubDir = path.join(dir, "stubs");
+  const inputPath = path.join(dir, "scanned.pdf");
+  const outputPath = path.join(dir, "scanned.md");
+  const callLogPath = path.join(dir, "ocr.log");
+
+  fs.mkdirSync(stubDir, { recursive: true });
+  writeTextFile(inputPath, "PAGE:blank");
+
+  writeTextFile(
+    path.join(stubDir, "markitdown.py"),
+    `
+class MarkItDown:
+    def convert_local(self, source):
+        class Result:
+            text_content = ""
+        return Result()
+`,
+  );
+
+  writeTextFile(
+    path.join(stubDir, "numpy.py"),
+    `
+def asarray(image):
+    return image
+`,
+  );
+
+  writeTextFile(
+    path.join(stubDir, "pypdfium2.py"),
+    `
+from pathlib import Path
+
+
+class _Bitmap:
+    def to_numpy(self):
+        return "image"
+
+
+class _Page:
+    def render(self, scale=1.0, grayscale=False):
+        return _Bitmap()
+
+
+class PdfDocument:
+    def __init__(self, source):
+        self._pages = []
+        for line in Path(str(source)).read_text(encoding="utf-8").splitlines():
+            if line.startswith("PAGE:"):
+                self._pages.append(_Page())
+
+    def __len__(self):
+        return len(self._pages)
+
+    def __getitem__(self, index):
+        return self._pages[index]
+
+    def close(self):
+        pass
+`,
+  );
+
+  writeTextFile(
+    path.join(stubDir, "rapidocr_onnxruntime.py"),
+    `
+class RapidOCR:
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+
+    def __call__(self, image):
+        with open(r"${callLogPath}", "a", encoding="utf-8") as log:
+            log.write("ocr\\n")
+        return [[None, "OCR text line"]], None
+`,
+  );
+
+  const env = {
+    ...process.env,
+    PYTHONPATH: [stubDir, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter),
+  };
+
+  const { stdout } = await execFileAsync(
+    "python",
+    [path.join(__dirname, "..", "scripts", "convert.py"), "--input", inputPath, "--output", outputPath],
+    { env },
+  );
+
+  const parsed = JSON.parse(stdout.trim());
+  const markdown = fs.readFileSync(outputPath, "utf8");
+
+  assert.equal(parsed.ok, true);
+  assert.equal(fs.readFileSync(callLogPath, "utf8").trim(), "ocr");
+  assert.match(markdown, /OCR text line/);
+});
+
 test("builds Windows releases as an installer for faster app startup", () => {
   const winBuild = packageJson.build.win;
   const nsisBuild = packageJson.build.nsis;
