@@ -9,10 +9,13 @@ PDF_OCR_RENDER_SCALE = 0.5
 PDF_OCR_LEAN_CONFIG = {
     "use_angle_cls": False,
     "det_model_path": "",
+    "det_module_name": "rapidocr_onnxruntime.ch_ppocr_v3_det",
     "det_limit_side_len": 512,
     "det_limit_type": "min",
     "det_thresh": 0.25,
     "det_box_thresh": 0.3,
+    "rec_model_path": "",
+    "rec_module_name": "rapidocr_onnxruntime.ch_ppocr_v3_rec",
 }
 
 

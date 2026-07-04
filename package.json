@@ -4,7 +4,7 @@
   "description": "Windows desktop MVP for converting local files to Markdown with MarkItDown.",
   "main": "src/main.js",
   "scripts": {
-    "build:converter": "pyinstaller --clean --onefile --name convert --collect-data magika scripts/convert.py --distpath build/converter --workpath build/pyinstaller --specpath build/pyinstaller",
+    "build:converter": "pyinstaller --clean --onefile --name convert --collect-data magika --collect-data rapidocr_onnxruntime --hidden-import rapidocr_onnxruntime.ch_ppocr_v3_det --hidden-import rapidocr_onnxruntime.ch_ppocr_v3_rec scripts/convert.py --distpath build/converter --workpath build/pyinstaller --specpath build/pyinstaller",
     "dist:win": "npm run build:converter && electron-builder --win",
     "start": "electron .",
     "test": "node --test tests/*.test.js"
