@@ -1,7 +1,10 @@
 import argparse
 import json
 import sys
+import tempfile
 from pathlib import Path
+
+PDF_CHUNK_PAGE_COUNT = 50
 
 
 def result(ok, **kwargs):
@@ -17,6 +20,72 @@ def load_converter():
     return MarkItDown()
 
 
+def load_pdf_reader_writer():
+    try:
+        from pypdf import PdfReader, PdfWriter
+    except Exception:
+        return None, None
+
+    return PdfReader, PdfWriter
+
+
+def extract_markdown_text(markdown):
+    text_content = getattr(markdown, "text_content", None)
+    if text_content is None:
+        return str(markdown)
+    return text_content
+
+
+def convert_local(converter, source):
+    markdown = converter.convert_local(str(source))
+    return extract_markdown_text(markdown)
+
+
+def convert_pdf_in_chunks(converter, source):
+    PdfReader, PdfWriter = load_pdf_reader_writer()
+    if PdfReader is None or PdfWriter is None:
+        return None
+
+    try:
+        reader = PdfReader(str(source))
+    except Exception:
+        return None
+
+    pages = getattr(reader, "pages", [])
+    if len(pages) <= PDF_CHUNK_PAGE_COUNT:
+        return None
+
+    parts = []
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_dir = Path(temp_dir)
+        for chunk_index, start in enumerate(range(0, len(pages), PDF_CHUNK_PAGE_COUNT), start=1):
+            writer = PdfWriter()
+            for page in pages[start : start + PDF_CHUNK_PAGE_COUNT]:
+                writer.add_page(page)
+
+            chunk_path = temp_dir / f"{source.stem}-part-{chunk_index}.pdf"
+            with chunk_path.open("wb") as chunk_file:
+                writer.write(chunk_file)
+
+            parts.append(convert_local(converter, chunk_path).rstrip())
+
+    return "\n\n".join(part for part in parts if part)
+
+
+def convert_source(converter, source):
+    try:
+        return convert_local(converter, source)
+    except Exception:
+        if source.suffix.lower() != ".pdf":
+            raise
+
+        chunked_markdown = convert_pdf_in_chunks(converter, source)
+        if chunked_markdown is None:
+            raise
+
+        return chunked_markdown
+
+
 def convert_with_converter(converter, input_path, output_path):
     source = Path(input_path)
     target = Path(output_path)
@@ -26,10 +95,7 @@ def convert_with_converter(converter, input_path, output_path):
 
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
-        markdown = converter.convert_local(str(source))
-        text_content = getattr(markdown, "text_content", None)
-        if text_content is None:
-            text_content = str(markdown)
+        text_content = convert_source(converter, source)
         target.write_text(text_content, encoding="utf-8")
     except Exception as exc:
         return {"inputPath": str(source), "ok": False, "errorCode": "CONVERSION_FAILED", "message": f"转换失败：{exc}"}

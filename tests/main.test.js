@@ -46,6 +46,11 @@ function execFileAsync(command, args, options = {}) {
   });
 }
 
+function writeTextFile(filePath, content) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, content, "utf8");
+}
+
 test("recognizes supported and unsupported file types", () => {
   assert.equal(SUPPORTED_EXTENSIONS.has(".pdf"), true);
   assert.equal(SUPPORTED_EXTENSIONS.has(".docx"), true);
@@ -296,6 +301,110 @@ test("converter script supports batch jobs and returns per-file output", async (
   );
   assert.equal(fs.readFileSync(firstOutput, "utf8").includes("Plain text sample"), true);
   assert.equal(fs.readFileSync(secondOutput, "utf8").includes("Heading"), true);
+});
+
+test("converter script falls back to chunked PDF conversion when a large PDF fails in one pass", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "everything-markdown-"));
+  const stubDir = path.join(dir, "stubs");
+  const inputPath = path.join(dir, "textbook.pdf");
+  const outputPath = path.join(dir, "textbook.md");
+  const callLogPath = path.join(dir, "calls.log");
+
+  fs.mkdirSync(stubDir, { recursive: true });
+
+  const pages = Array.from({ length: 51 }, (_, index) => `Page ${index + 1}`);
+  writeTextFile(
+    inputPath,
+    pages.map((page) => `PAGE:${page}`).join("\n"),
+  );
+
+  writeTextFile(
+    path.join(stubDir, "markitdown.py"),
+    `
+from pathlib import Path
+
+
+class _Result:
+    def __init__(self, text_content):
+        self.text_content = text_content
+
+
+class MarkItDown:
+    def convert_local(self, source):
+        source = str(source)
+        with open(r"${callLogPath}", "a", encoding="utf-8") as log:
+            log.write(source + "\\n")
+
+        if source.endswith(".pdf") and "-part-" not in source:
+            raise RuntimeError("too large")
+
+        pages = []
+        for line in Path(source).read_text(encoding="utf-8").splitlines():
+            if line.startswith("PAGE:"):
+                pages.append(line[5:])
+
+        return _Result("\\n".join(pages))
+`,
+  );
+
+  writeTextFile(
+    path.join(stubDir, "pypdf.py"),
+    `
+from pathlib import Path
+
+
+class _Page:
+    def __init__(self, text):
+        self._text = text
+
+    def extract_text(self):
+        return self._text
+
+
+class PdfReader:
+    def __init__(self, source):
+        self._source = str(source)
+        self.pages = []
+        for line in Path(self._source).read_text(encoding="utf-8").splitlines():
+            if line.startswith("PAGE:"):
+                self.pages.append(_Page(line[5:]))
+
+
+class PdfWriter:
+    def __init__(self):
+        self._pages = []
+
+    def add_page(self, page):
+        self._pages.append(page)
+
+    def write(self, stream):
+        payload = "\\n".join(f"PAGE:{page.extract_text()}" for page in self._pages)
+        stream.write(payload.encode("utf-8"))
+`,
+  );
+
+  const env = {
+    ...process.env,
+    PYTHONPATH: [stubDir, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter),
+  };
+
+  const { stdout } = await execFileAsync(
+    "python",
+    [path.join(__dirname, "..", "scripts", "convert.py"), "--input", inputPath, "--output", outputPath],
+    { env },
+  );
+
+  const parsed = JSON.parse(stdout.trim());
+  const calls = fs.readFileSync(callLogPath, "utf8").trim().split(/\r?\n/);
+  const markdown = fs.readFileSync(outputPath, "utf8");
+
+  assert.equal(parsed.ok, true);
+  assert.equal(calls[0], inputPath);
+  assert.equal(calls.length, 3);
+  assert.equal(markdown.includes("Page 1"), true);
+  assert.equal(markdown.includes("Page 50"), true);
+  assert.equal(markdown.includes("Page 51"), true);
+  assert.match(markdown, /Page 50\r?\n\r?\nPage 51/);
 });
 
 test("builds Windows releases as an installer for faster app startup", () => {
